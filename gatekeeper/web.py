@@ -1,8 +1,10 @@
-"""Read-only dashboard (basic auth). Approvals happen in Discord, not here."""
+"""Dashboard (basic auth): blocked traffic, alerts, and the allowlist. Removing is the only action here; approvals happen in Discord."""
 import base64
 import datetime
 import hmac
+import secrets
 from html import escape
+from urllib.parse import urlencode
 
 from aiohttp import web
 
@@ -20,6 +22,8 @@ main { padding:16px; max-width:1200px } .cards { display:grid; grid-template-col
 .wrap { overflow-x:auto } table { border-collapse:collapse; width:100%; background:var(--card); border:1px solid var(--line) }
 th,td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); white-space:nowrap; font-variant-numeric:tabular-nums }
 td.wide { white-space:normal; min-width:220px } code { font-size:12.5px }
+form { margin:0 } button { font:inherit; padding:3px 10px; border:1px solid var(--warn); color:var(--warn); background:transparent; border-radius:5px; cursor:pointer }
+button:hover { background:var(--warn); color:var(--card) } .notice { padding:8px 12px; border:1px solid var(--line); background:var(--card); border-radius:6px }
 """
 
 
@@ -40,6 +44,9 @@ def _table(headers, rows):
 
 
 def build_app(gk, settings):
+    # Per-process token for the Remove form, so another site can't submit it using the browser's saved login
+    csrf_token = secrets.token_urlsafe(24)
+
     @web.middleware
     async def auth(request, handler):
         if request.path == "/healthz":
@@ -80,15 +87,41 @@ def build_app(gk, settings):
         rows = []
         for r in sorted(gk.db.active_entries(), key=lambda r: r["last_seen"] or r["approved_at"] or "", reverse=True):
             if gk.is_pinned(r):
-                expires = "never (pinned)"
+                expires, action = "never (pinned)", "<span class='muted'>pinned</span>"
             else:
                 exp = parse(r["last_seen"] or r["approved_at"]) + datetime.timedelta(days=settings.expire_days)
                 expires = f"{exp.astimezone():%Y-%m-%d} ({(exp - now).days} d)"
+                action = (f"<form method='post' action='/allowlist/remove' "
+                          f"onsubmit=\"return confirm('Remove {escape(r['entry'])} from the allowlist?')\">"
+                          f"<input type='hidden' name='entry' value='{escape(r['entry'])}'>"
+                          f"<input type='hidden' name='token' value='{csrf_token}'>"
+                          f"<button type='submit'>Remove</button></form>")
             rows.append(f"<tr><td><code>{escape(r['entry'])}</code></td><td>{escape(r['kind'])}</td>"
                         f"<td class='wide'>{escape(r['label'] or '')}</td><td>{escape(r['approved_by'] or '')}</td>"
-                        f"<td>{_local(r['approved_at'])}</td><td>{_local(r['last_seen'])}</td><td>{expires}</td></tr>")
-        return _page("Allowlist", f"<h2>Allowlist ({len(rows)})</h2>" + _table(
-            ["Entry", "Kind", "Label / comment", "By", "Approved", "Last used", "Expires"], rows))
+                        f"<td>{_local(r['approved_at'])}</td><td>{_local(r['last_seen'])}</td><td>{expires}</td>"
+                        f"<td>{action}</td></tr>")
+        notice = request.query.get("msg", "")
+        notice = f"<p class='notice'>{escape(notice)}</p>" if notice else ""
+        return _page("Allowlist", f"<h2>Allowlist ({len(rows)})</h2>{notice}" + _table(
+            ["Entry", "Kind", "Label / comment", "By", "Approved", "Last used", "Expires", ""], rows))
+
+    async def remove(request):
+        form = await request.post()
+        if not hmac.compare_digest(str(form.get("token", "")), csrf_token):
+            return web.Response(status=403, text="Invalid or expired form. Reload the page and try again.")
+        entry = str(form.get("entry", "")).strip()
+        row = gk.db.entry(entry)
+        if row is None or not row["active"]:
+            msg = f"{entry} is not on the allowlist."
+        elif gk.is_pinned(row):
+            msg = f"{entry} is pinned (home) and can't be removed here."
+        else:
+            try:
+                await gk.revoke(entry, f"removed on dashboard by {settings.dashboard_user}")
+                msg = f"Removed {entry}. Cloudflare applies it within about a minute."
+            except Exception as e:
+                msg = f"Couldn't remove {entry}: {e}"
+        raise web.HTTPSeeOther(f"/allowlist?{urlencode({'msg': msg})}")
 
     async def events(request):
         rows = [f"<tr><td>{_local(e['ts'])}</td><td><code>{escape(e['ip'])}</code></td><td>{escape(e['country'] or '')}</td>"
@@ -103,5 +136,5 @@ def build_app(gk, settings):
 
     app = web.Application(middlewares=[auth])
     app.add_routes([web.get("/", overview), web.get("/allowlist", allowlist), web.get("/events", events),
-                    web.get("/healthz", healthz)])
+                    web.post("/allowlist/remove", remove), web.get("/healthz", healthz)])
     return app

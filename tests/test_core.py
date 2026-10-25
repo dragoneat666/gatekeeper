@@ -254,3 +254,12 @@ def test_existing_database_gets_new_column(tmp_path):
     db = DB(path)
     assert db.entry("203.0.113.9")["approved_by_id"] == ""
     assert db.count_active_by("1", "member") == 0
+
+
+def test_letmein_is_unlimited_by_default_and_labels_nickname():
+    gk, cf, _ = make()
+    cf.events = [event(f"203.0.113.{i}", ago(minutes=5)) for i in range(1, 6)]
+    for i in range(1, 6):
+        assert run(gk.letmein(f"203.0.113.{i}", 7, "carol_99", nickname="Carol (Smith family)"))[0] == "approved"
+    row = gk.db.entry("203.0.113.1")
+    assert row["approved_by"] == "carol_99" and row["label"] == "via /letmein (Carol (Smith family))"

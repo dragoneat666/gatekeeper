@@ -153,3 +153,30 @@ def test_blocked_reply_text():
     btn = ApproveButton("2607:fb90::/64", label="Approve #1")
     assert btn.item.custom_id == "gk:ok:2607:fb90::/64"
     assert ApproveButton.__discord_ui_compiled_template__.fullmatch(btn.item.custom_id)["entry"] == "2607:fb90::/64"
+
+
+def test_dashboard_remove_needs_token_and_skips_pinned():
+    import re
+    from gatekeeper.web import build_app
+    gk, cf, _ = make([("203.0.113.10", "seed 2026-10-25 import: alice"),
+                      ("198.51.100.1", "home WAN (pinned) 2026-10-25")])
+    gk.s.dashboard_password = "secret"
+    asyncio.run(gk.sync_list())
+    auth = aiohttp.BasicAuth("admin", "secret")
+
+    async def go():
+        async with TestClient(TestServer(build_app(gk, gk.s))) as client:
+            page = await (await client.get("/allowlist", auth=auth)).text()
+            assert page.count("<button") == 1                      # no Remove button on the pinned home entry
+            token = re.search(r"name='token' value='([^']+)'", page).group(1)
+            r = await client.post("/allowlist/remove", data={"entry": "203.0.113.10", "token": "wrong"}, auth=auth)
+            assert r.status == 403 and gk.db.entry("203.0.113.10")["active"] == 1
+            r = await client.post("/allowlist/remove", data={"entry": "198.51.100.1", "token": token}, auth=auth)
+            assert "pinned" in await r.text() and gk.db.entry("198.51.100.1")["active"] == 1
+            r = await client.post("/allowlist/remove", data={"entry": "203.0.113.10", "token": token}, auth=auth)
+            assert "Removed 203.0.113.10" in await r.text()
+            assert gk.db.entry("203.0.113.10")["active"] == 0
+            assert not any(i["ip"] == "203.0.113.10" for i in cf.items)
+            r = await client.post("/allowlist/remove", data={"entry": "203.0.113.10", "token": token})
+            assert r.status == 401                                   # still needs the dashboard login
+    asyncio.run(go())

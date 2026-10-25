@@ -87,7 +87,7 @@ class Gatekeeper:
         return None
 
     # --- approve / revoke --------------------------------------------------------------------
-    async def letmein(self, query, user_id, user_name, is_admin=False):
+    async def letmein(self, query, user_id, user_name, is_admin=False, nickname=""):
         """Self-service approval from a Ray ID or IP that Cloudflare actually blocked recently.
 
         Returns (status, entry): status is 'approved', 'already', 'not_found', 'limit' or 'invalid'.
@@ -114,9 +114,11 @@ class Gatekeeper:
         row = self.db.entry(entry)
         if row is not None and row["active"]:
             return "already", entry
-        if not is_admin and self.db.count_active_by(str(user_id), "member") >= self.s.letmein_max_active:
+        limit = self.s.letmein_max_active
+        if limit and not is_admin and self.db.count_active_by(str(user_id), "member") >= limit:
             return "limit", entry
-        await self.approve(entry, by=user_name, label="via /letmein", kind="member", by_id=str(user_id))
+        label = f"via /letmein ({nickname})" if nickname and nickname != user_name else "via /letmein"
+        await self.approve(entry, by=user_name, label=label, kind="member", by_id=str(user_id))
         return "approved", entry
 
     async def approve(self, ip_or_entry, by, label="", kind="approved", by_id=""):

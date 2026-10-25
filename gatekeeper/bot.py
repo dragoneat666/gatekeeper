@@ -71,7 +71,8 @@ class LetMeInModal(discord.ui.Modal, title="Get access"):
         gk = interaction.client.gk
         try:
             status, entry = await gk.letmein(self.code.value, interaction.user.id, interaction.user.name,
-                                             is_admin=_is_admin(interaction))
+                                             is_admin=_is_admin(interaction),
+                                             nickname=getattr(interaction.user, "display_name", ""))
         except Exception as e:
             log.exception("letmein failed")
             return await interaction.followup.send(f"Something went wrong: {e}. Ask an admin.", ephemeral=True)
