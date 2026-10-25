@@ -1,0 +1,29 @@
+# gatekeeper
+
+Companion app for a default-deny Cloudflare IP allowlist (WAF custom rule `not ip.src in $gatekeeper_allow` → Block).
+
+- **Polls** Cloudflare's GraphQL API every 5 minutes for blocked requests and keeps them in SQLite (Cloudflare keeps 31 days).
+- **Alerts** to ntfy only on targeted probing: repeated hits on real hostnames or login paths. Scanner noise goes into the daily summary.
+- **Discord bot** (on demand, ephemeral replies, admin user IDs only):
+  - `/blocked [minutes]` lists recent blocked IPs with Approve buttons. It refreshes from Cloudflare first.
+  - `/approve <ip> [label]` approves an IP someone sent you from Cloudflare's block page.
+  - `/revoke <entry>` removes an entry.
+- **Daily summary** to a private admin channel via webhook.
+- **Expiry**: entries unused for 60 days (configurable) are removed. "Used" comes from Cloudflare's per-IP request analytics, so TV and phone apps count.
+- **Home IP**: the server's public IP is kept on the list and replaced automatically when it changes (new one added before the old one is removed).
+- IPv6 clients are approved as their /64, because devices rotate addresses within it.
+- **Dashboard** (read-only, basic auth) on port 8080.
+
+Cloudflare's list is the source of truth for who gets in; entries added or removed in the dashboard are picked up hourly.
+
+## Settings
+
+See `.env.example`. The Cloudflare token needs only **Account Rule Lists: Edit** and **Account Analytics: Read**. It cannot change WAF rules or DNS.
+
+## Tests
+
+```bash
+docker build --target test .
+```
+
+The GitHub workflow runs the same tests before building and pushing `ghcr.io/dragoneat666/gatekeeper:latest`.
