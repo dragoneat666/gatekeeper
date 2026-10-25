@@ -53,6 +53,13 @@ class DB:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("pragma journal_mode=wal")
         self.conn.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self):
+        cols = {r["name"] for r in self.conn.execute("pragma table_info(allowlist)")}
+        if "approved_by_id" not in cols:  # Discord user ID behind an approval, for per-member limits
+            with self.conn:
+                self.conn.execute("alter table allowlist add column approved_by_id text default ''")
 
     # --- state -------------------------------------------------------------------------------
     def get_state(self, key, default=None):
@@ -85,6 +92,13 @@ class DB:
                from events where ts >= ? and action = 'block'
                group by entry order by hits desc, last desc limit ?""", (since, limit)).fetchall()
 
+    def event_by_ray(self, ray: str):
+        return self.conn.execute("select * from events where ray=?", (ray,)).fetchone()
+
+    def latest_event_for(self, entry: str, since: str):
+        return self.conn.execute("select * from events where entry=? and ts>=? order by ts desc limit 1",
+                                 (entry, since)).fetchone()
+
     def events_for(self, entry: str, since: str):
         return self.conn.execute("select * from events where entry=? and ts>=? order by ts",
                                  (entry, since)).fetchall()
@@ -106,17 +120,21 @@ class DB:
     def active_entries(self):
         return self.conn.execute("select * from allowlist where active=1 order by entry").fetchall()
 
-    def upsert_entry(self, entry, cf_id, kind, label="", approved_by="", approved_at=None):
+    def upsert_entry(self, entry, cf_id, kind, label="", approved_by="", approved_at=None, approved_by_id=""):
         approved_at = approved_at or iso(utcnow())
         with self.conn:
             self.conn.execute(
-                """insert into allowlist(entry, cf_id, kind, label, approved_by, approved_at, active)
-                   values(?, ?, ?, ?, ?, ?, 1)
+                """insert into allowlist(entry, cf_id, kind, label, approved_by, approved_at, active, approved_by_id)
+                   values(?, ?, ?, ?, ?, ?, 1, ?)
                    on conflict(entry) do update set cf_id=excluded.cf_id, kind=excluded.kind,
                      label=excluded.label, approved_by=excluded.approved_by,
                      approved_at=excluded.approved_at, last_seen=null, active=1,
-                     removed_at=null, removed_reason=null""",
-                (entry, cf_id, kind, label, approved_by, approved_at))
+                     removed_at=null, removed_reason=null, approved_by_id=excluded.approved_by_id""",
+                (entry, cf_id, kind, label, approved_by, approved_at, approved_by_id))
+
+    def count_active_by(self, approved_by_id, kind):
+        return self.conn.execute("select count(*) from allowlist where active=1 and kind=? and approved_by_id=?",
+                                 (kind, approved_by_id)).fetchone()[0]
 
     def set_cf_id(self, entry, cf_id):
         with self.conn:

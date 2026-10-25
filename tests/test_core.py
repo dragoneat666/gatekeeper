@@ -182,3 +182,75 @@ def test_summary_mentions_blocks_alerts_and_approvals():
     text = gk.summary_text()
     assert "Blocked requests: **1**" in text and "6.6.6.6" in text and "Approved: `9.9.9.9`" in text
     assert "Allowlist: 4 entries" in text
+
+
+# --- /letmein ------------------------------------------------------------------------------
+from gatekeeper.core import parse_ray
+
+
+def test_parse_ray_accepts_the_forms_people_paste():
+    assert parse_ray("8f2a1b3c4d5e6f70") == "8f2a1b3c4d5e6f70"
+    assert parse_ray("Cloudflare Ray ID: 8F2A1B3C4D5E6F70") == "8f2a1b3c4d5e6f70"
+    assert parse_ray("8f2a1b3c4d5e6f70-ORD") == "8f2a1b3c4d5e6f70"
+    assert parse_ray("hello") is None and parse_ray("8f2a1b3c") is None
+
+
+def test_letmein_by_ray_id_approves_that_requests_ipv6_64():
+    gk, cf, _ = make()
+    cf.events = [event("2001:db8:5:6:7:8:9:10", ago(minutes=4), ray="8f2a1b3c4d5e6f70")]
+    status, entry = run(gk.letmein(" Ray ID: 8f2a1b3c4d5e6f70-ORD ", user_id=111, user_name="alice"))
+    assert (status, entry) == ("approved", "2001:db8:5:6::/64")
+    row = gk.db.entry(entry)
+    assert row["kind"] == "member" and row["approved_by"] == "alice" and row["approved_by_id"] == "111"
+    assert run(gk.letmein("8f2a1b3c4d5e6f70", 111, "alice"))[0] == "already"
+
+
+def test_letmein_by_ip_needs_a_recent_block_from_it():
+    gk, cf, _ = make()
+    cf.events = [event("203.0.113.50", ago(minutes=10))]
+    assert run(gk.letmein("203.0.113.51", 1, "bob")) == ("not_found", "203.0.113.51")
+    assert run(gk.letmein("203.0.113.50", 1, "bob")) == ("approved", "203.0.113.50")
+    cf.events = [event("2001:db8:9:9::1", ago(minutes=5))]
+    assert run(gk.letmein("2001:db8:9:9:abcd::2", 1, "bob")) == ("approved", "2001:db8:9:9::/64")
+
+
+def test_letmein_ignores_blocks_older_than_the_lookback():
+    gk, cf, _ = make(letmein_lookback_hours=24)
+    old = event("203.0.113.60", ago(hours=30), ray="aaaaaaaaaaaaaaaa")
+    gk.db.add_events([gk._to_event(old)])
+    assert run(gk.letmein("aaaaaaaaaaaaaaaa", 1, "x"))[0] == "not_found"
+    assert run(gk.letmein("203.0.113.60", 1, "x"))[0] == "not_found"
+
+
+def test_letmein_limit_per_member_but_not_for_admins():
+    gk, cf, _ = make(letmein_max_active=2)
+    cf.events = [event(f"203.0.113.{i}", ago(minutes=5)) for i in (1, 2, 3)]
+    assert run(gk.letmein("203.0.113.1", 7, "carol"))[0] == "approved"
+    assert run(gk.letmein("203.0.113.2", 7, "carol"))[0] == "approved"
+    assert run(gk.letmein("203.0.113.3", 7, "carol")) == ("limit", "203.0.113.3")
+    assert run(gk.letmein("203.0.113.3", 8, "dave"))[0] == "approved"          # limits are per member
+    run(gk.revoke("203.0.113.1", "test"))
+    cf.events.append(event("203.0.113.4", ago(minutes=1)))
+    assert run(gk.letmein("203.0.113.4", 7, "carol"))[0] == "approved"         # revoked ones free a slot
+    cf.events.append(event("203.0.113.5", ago(minutes=1)))
+    assert run(gk.letmein("203.0.113.5", 7, "carol", is_admin=True))[0] == "approved"
+
+
+def test_letmein_rejects_junk():
+    gk, _, _ = make()
+    assert run(gk.letmein("please let me in", 1, "x")) == ("invalid", None)
+
+
+def test_existing_database_gets_new_column(tmp_path):
+    import sqlite3
+    from gatekeeper.db import DB
+    path = str(tmp_path / "old.db")
+    old = sqlite3.connect(path)
+    old.executescript("""create table allowlist (entry text primary key, cf_id text, kind text not null,
+        label text default '', approved_by text default '', approved_at text, last_seen text,
+        active integer not null default 1, removed_at text, removed_reason text);
+        insert into allowlist(entry, kind, approved_at) values('203.0.113.9', 'seed', '2026-10-25T00:00:00Z');""")
+    old.commit(); old.close()
+    db = DB(path)
+    assert db.entry("203.0.113.9")["approved_by_id"] == ""
+    assert db.count_active_by("1", "member") == 0

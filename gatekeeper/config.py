@@ -51,6 +51,9 @@ class Settings:
     discord_admins: list = field(default_factory=list)
     discord_webhook: str = ""
     summary_hour: int = 8
+    letmein_max_active: int = 3
+    letmein_role_id: int = 0
+    letmein_lookback_hours: int = 24
 
     dashboard_port: int = 8080
     dashboard_user: str = "admin"
@@ -84,6 +87,9 @@ class Settings:
             discord_admins=[int(x) for x in _list("DISCORD_ADMIN_IDS")],
             discord_webhook=os.environ.get("DISCORD_WEBHOOK_URL", ""),
             summary_hour=_int("SUMMARY_HOUR", 8),
+            letmein_max_active=_int("LETMEIN_MAX_ACTIVE", 3),
+            letmein_role_id=_int("LETMEIN_ROLE_ID", 0),
+            letmein_lookback_hours=_int("LETMEIN_LOOKBACK_HOURS", 24),
             dashboard_port=_int("DASHBOARD_PORT", 8080),
             dashboard_user=os.environ.get("DASHBOARD_USER", "admin"),
             dashboard_password=os.environ.get("DASHBOARD_PASSWORD", ""),

@@ -14,6 +14,15 @@ EVENT_OVERLAP = datetime.timedelta(minutes=15)
 # Request analytics lag a little too, so last-seen windows stop this far before "now".
 REQUEST_LAG = datetime.timedelta(minutes=5)
 
+# A Ray ID is 16 hex characters. Block pages and headers may add a data-center suffix ("-ORD")
+# or a label ("Cloudflare Ray ID: ..."), so search for the hex part.
+RAY_RE = re.compile(r"\b([0-9a-f]{16})(?:-[a-z]{3})?\b", re.IGNORECASE)
+
+
+def parse_ray(text):
+    m = RAY_RE.search(text or "")
+    return m.group(1).lower() if m else None
+
 
 class Gatekeeper:
     def __init__(self, settings, db, cf, notifier):
@@ -78,7 +87,39 @@ class Gatekeeper:
         return None
 
     # --- approve / revoke --------------------------------------------------------------------
-    async def approve(self, ip_or_entry, by, label="", kind="approved"):
+    async def letmein(self, query, user_id, user_name, is_admin=False):
+        """Self-service approval from a Ray ID or IP that Cloudflare actually blocked recently.
+
+        Returns (status, entry): status is 'approved', 'already', 'not_found', 'limit' or 'invalid'.
+        """
+        try:
+            await self.poll_events()  # pick up blocks that happened since the last scheduled poll
+        except Exception:
+            log.exception("poll before /letmein failed; using stored events")
+        since = iso(utcnow() - datetime.timedelta(hours=self.s.letmein_lookback_hours))
+        q = (query or "").strip()
+        try:
+            entry = ipnet.entry_for(q, self.s.ipv6_prefix)
+            ev = self.db.latest_event_for(entry, since)
+        except ValueError:
+            ray = parse_ray(q)
+            if not ray:
+                return "invalid", None
+            ev = self.db.event_by_ray(ray)
+            if ev is not None and ev["ts"] < since:
+                ev = None
+            entry = ev["entry"] if ev is not None else None
+        if ev is None:
+            return "not_found", entry
+        row = self.db.entry(entry)
+        if row is not None and row["active"]:
+            return "already", entry
+        if not is_admin and self.db.count_active_by(str(user_id), "member") >= self.s.letmein_max_active:
+            return "limit", entry
+        await self.approve(entry, by=user_name, label="via /letmein", kind="member", by_id=str(user_id))
+        return "approved", entry
+
+    async def approve(self, ip_or_entry, by, label="", kind="approved", by_id=""):
         """Add an IP (IPv6 is widened to its /64) to the list. Returns (entry, already_present)."""
         raw = ip_or_entry.strip()
         entry = ipnet.normalize_entry(raw) if "/" in raw else ipnet.entry_for(raw, self.s.ipv6_prefix)
@@ -91,7 +132,7 @@ class Gatekeeper:
             comment = f"home WAN (pinned) {today}"
         await self.cf.add_items([{"ip": entry, "comment": comment[:500]}])
         cf_id = None if self.cf.dry_run else await self._find_item_id(entry)
-        self.db.upsert_entry(entry, cf_id, kind, label=label, approved_by=by)
+        self.db.upsert_entry(entry, cf_id, kind, label=label, approved_by=by, approved_by_id=by_id)
         self.db.log("approved" if kind != "home" else "home_added", entry, comment)
         log.info("approved %s (%s)", entry, comment)
         return entry, False

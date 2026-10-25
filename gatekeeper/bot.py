@@ -50,6 +50,43 @@ class ApproveButton(discord.ui.DynamicItem[discord.ui.Button], template=r"gk:ok:
         await interaction.followup.send(msg, ephemeral=True)
 
 
+LETMEIN_REPLIES = {
+    "approved": "You're in: `{entry}` is now allowed. Give it about a minute, then reload the page or app.",
+    "already": "`{entry}` is already allowed. If you're still blocked, your connection may have changed. "
+               "Load the site again and use the new Ray ID from the block page.",
+    "not_found": "I couldn't find that block yet. Cloudflare usually reports a block 2-3 minutes after it happens. "
+                 "Load the site once, wait **3 minutes**, then try `/letmein` again with the Ray ID from the block page.",
+    "limit": "You've reached the limit of {limit} active approvals. Ask an admin to approve this one.",
+    "invalid": "That doesn't look like a Ray ID or an IP address. The Ray ID is the 16-character code at the "
+               "bottom of Cloudflare's block page, like `8f2a1b3c4d5e6f70`.",
+}
+
+
+class LetMeInModal(discord.ui.Modal, title="Get access"):
+    code = discord.ui.TextInput(label="Ray ID or IP address", max_length=100,
+                                placeholder="Ray ID from the block page, e.g. 8f2a1b3c4d5e6f70")
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        gk = interaction.client.gk
+        try:
+            status, entry = await gk.letmein(self.code.value, interaction.user.id, interaction.user.name,
+                                             is_admin=_is_admin(interaction))
+        except Exception as e:
+            log.exception("letmein failed")
+            return await interaction.followup.send(f"Something went wrong: {e}. Ask an admin.", ephemeral=True)
+        log.info("/letmein by %s: %s %s", interaction.user.name, status, entry)
+        await interaction.followup.send(
+            LETMEIN_REPLIES[status].format(entry=entry, limit=gk.s.letmein_max_active), ephemeral=True)
+
+
+def _may_letmein(interaction: discord.Interaction) -> bool:
+    role = interaction.client.settings.letmein_role_id
+    if not role or _is_admin(interaction):
+        return True
+    return any(r.id == role for r in getattr(interaction.user, "roles", []))
+
+
 def render_blocked(rows, minutes, approved):
     if not rows:
         return f"No blocked requests in the last {minutes} min. (Cloudflare can take ~3 min to report a block.)"
@@ -76,13 +113,21 @@ class GateBot(discord.Client):
     async def setup_hook(self):
         self.add_dynamic_items(ApproveButton)
         guild = discord.Object(id=self.settings.discord_guild)
-        for cmd in (blocked_cmd, approve_cmd, revoke_cmd):
+        for cmd in (blocked_cmd, approve_cmd, revoke_cmd, letmein_cmd):
             self.tree.add_command(cmd, guild=guild)
         await self.tree.sync(guild=guild)
         log.info("slash commands synced to guild %s", self.settings.discord_guild)
 
     async def on_ready(self):
         log.info("Discord bot logged in as %s", self.user)
+
+
+@app_commands.command(name="letmein", description="Blocked from a site? Get access with the Ray ID from the block page")
+async def letmein_cmd(interaction: discord.Interaction):
+    if not _may_letmein(interaction):
+        return await interaction.response.send_message("You need to be verified before you can use this.",
+                                                       ephemeral=True)
+    await interaction.response.send_modal(LetMeInModal())
 
 
 @app_commands.command(name="blocked", description="Recently blocked IPs, with Approve buttons")
