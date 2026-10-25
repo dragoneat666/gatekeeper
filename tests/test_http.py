@@ -180,3 +180,18 @@ def test_dashboard_remove_needs_token_and_skips_pinned():
             r = await client.post("/allowlist/remove", data={"entry": "203.0.113.10", "token": token})
             assert r.status == 401                                   # still needs the dashboard login
     asyncio.run(go())
+
+
+def test_commands_page_lists_every_registered_command():
+    from gatekeeper.bot import COMMANDS
+    from gatekeeper.web import build_app
+    gk, _, _ = make()
+    gk.s.dashboard_password = "secret"
+
+    async def go():
+        async with TestClient(TestServer(build_app(gk, gk.s))) as client:
+            page = await (await client.get("/commands", auth=aiohttp.BasicAuth("admin", "secret"))).text()
+            for cmd, who in COMMANDS:
+                assert f"/{cmd.name}" in page and cmd.description[:30] in page
+            assert "/blocked [minutes]" in page and "/approve &lt;ip&gt; [label]" in page
+    asyncio.run(go())

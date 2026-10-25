@@ -35,7 +35,7 @@ def _page(title, body):
     return web.Response(content_type="text/html", text=f"""<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>{escape(title)}</title><style>{CSS}</style></head>
 <body><header><b>Gatekeeper</b><nav><a href="/">Overview</a><a href="/allowlist">Allowlist</a>
-<a href="/events">Events</a></nav></header><main>{body}</main></body></html>""")
+<a href="/events">Events</a><a href="/commands">Commands</a></nav></header><main>{body}</main></body></html>""")
 
 
 def _table(headers, rows):
@@ -131,10 +131,30 @@ def build_app(gk, settings):
         return _page("Events", "<h2>Latest 300 blocked requests</h2>" + _table(
             ["When", "IP", "Country", "Network", "Host", "Request", "User agent"], rows))
 
+    async def commands(request):
+        from .bot import COMMANDS  # the same definitions the bot registers with Discord
+        rows = []
+        for cmd, who in COMMANDS:
+            usage = " ".join([f"/{cmd.name}"] + [f"<{p.name}>" if p.required else f"[{p.name}]" for p in cmd.parameters])
+            opts = "".join(f"<br><span class='muted'>{escape(p.name)}: {escape(p.description)}"
+                           f"{'' if p.required else ' (optional)'}</span>" for p in cmd.parameters)
+            rows.append(f"<tr><td><code>{escape(usage)}</code></td><td>{escape(who)}</td>"
+                        f"<td class='wide'>{escape(cmd.description)}{opts}</td></tr>")
+        notes = ("<h2>Good to know</h2><ul>"
+                 "<li>All replies are private: only the person who ran the command sees them.</li>"
+                 "<li><code>/blocked</code> replies with an <b>Approve</b> button per entry; buttons keep working after a restart.</li>"
+                 "<li><code>/letmein</code> opens a box for the Ray ID (bottom of Cloudflare's block page) or an IP. "
+                 "It only approves something Cloudflare actually blocked in the last "
+                 f"{settings.letmein_lookback_hours} h. Blocks take about 3 minutes to show up.</li>"
+                 "<li>IPv6 addresses are approved as their whole /64, so a phone or home stays allowed as its address rotates.</li>"
+                 "<li>Who sees which command can be adjusted in Discord: Server Settings → Integrations → the bot.</li></ul>")
+        return _page("Commands", "<h2>Discord commands</h2>" + _table(["Command", "Who", "What it does"], rows) + notes)
+
     async def healthz(request):
         return web.Response(text="ok")
 
     app = web.Application(middlewares=[auth])
     app.add_routes([web.get("/", overview), web.get("/allowlist", allowlist), web.get("/events", events),
-                    web.post("/allowlist/remove", remove), web.get("/healthz", healthz)])
+                    web.post("/allowlist/remove", remove), web.get("/commands", commands),
+                    web.get("/healthz", healthz)])
     return app

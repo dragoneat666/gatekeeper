@@ -114,7 +114,7 @@ class GateBot(discord.Client):
     async def setup_hook(self):
         self.add_dynamic_items(ApproveButton)
         guild = discord.Object(id=self.settings.discord_guild)
-        for cmd in (blocked_cmd, approve_cmd, revoke_cmd, letmein_cmd):
+        for cmd, _ in COMMANDS:
             self.tree.add_command(cmd, guild=guild)
         await self.tree.sync(guild=guild)
         log.info("slash commands synced to guild %s", self.settings.discord_guild)
@@ -194,3 +194,12 @@ async def revoke_cmd(interaction: discord.Interaction, entry: str):
         return await interaction.followup.send(f"Revoke failed: {e}", ephemeral=True)
     await interaction.followup.send(f"Removed `{entry}`." if ok else f"`{entry}` isn't on the allowlist.",
                                     ephemeral=True)
+
+
+# Every command the bot registers, with who can use it. The dashboard's Commands page reads this too.
+COMMANDS = (
+    (letmein_cmd, "Everyone in the server"),
+    (blocked_cmd, "Admins"),
+    (approve_cmd, "Admins"),
+    (revoke_cmd, "Admins"),
+)
