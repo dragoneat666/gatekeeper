@@ -145,7 +145,10 @@ def build_app(gk, settings):
                  "<li><code>/blocked</code> replies with an <b>Approve</b> button per entry; buttons keep working after a restart.</li>"
                  "<li><code>/letmein</code> opens a box for the Ray ID (bottom of Cloudflare's block page) or an IP. "
                  "It only approves something Cloudflare actually blocked in the last "
-                 f"{settings.letmein_lookback_hours} h. Blocks take about 3 minutes to show up.</li>"
+                 f"{settings.letmein_lookback_hours} h. Blocks take about 3 minutes to show up, so the bot keeps checking "
+                 "every 30 seconds for up to 5 minutes and updates its reply.</li>"
+                 "<li><code>/postaccess</code> posts a permanent <b>Get access</b> button (same as <code>/letmein</code>) "
+                 "so members never have to type a command. Pin that message.</li>"
                  "<li>IPv6 addresses are approved as their whole /64, so a phone or home stays allowed as its address rotates.</li>"
                  "<li>Who sees which command can be adjusted in Discord: Server Settings → Integrations → the bot.</li></ul>")
         return _page("Commands", "<h2>Discord commands</h2>" + _table(["Command", "Who", "What it does"], rows) + notes)

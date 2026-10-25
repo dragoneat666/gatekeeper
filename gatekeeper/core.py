@@ -1,4 +1,5 @@
 """The gatekeeper's jobs. Cloudflare's list decides who gets in; SQLite remembers why and when."""
+import asyncio
 import datetime
 import logging
 import re
@@ -32,6 +33,7 @@ class Gatekeeper:
         self.notify = notifier
         self.login_re = re.compile(settings.login_paths)
         self.pinned = {ipnet.normalize_entry(p) for p in settings.pinned}
+        self._poll_lock = asyncio.Lock()
 
     # --- list sync ---------------------------------------------------------------------------
     def _kind_from_comment(self, entry, comment):
@@ -87,6 +89,25 @@ class Gatekeeper:
         return None
 
     # --- approve / revoke --------------------------------------------------------------------
+    async def letmein_wait(self, query, user_id, user_name, is_admin=False, nickname="",
+                           tries=11, interval=30, on_wait=None, sleep=asyncio.sleep):
+        """Like letmein, but keeps checking while Cloudflare hasn't reported the block yet.
+
+        Checks right away, then every `interval` seconds (default: 11 checks = 5 minutes). Calls
+        on_wait() once, after the first miss, so the caller can say it's waiting. Returns 'timeout'
+        instead of 'not_found' when every check missed.
+        """
+        entry = None
+        for attempt in range(tries):
+            status, entry = await self.letmein(query, user_id, user_name, is_admin=is_admin, nickname=nickname)
+            if status != "not_found":
+                return status, entry
+            if attempt == 0 and on_wait is not None:
+                await on_wait()
+            if attempt < tries - 1:
+                await sleep(interval)
+        return "timeout", entry
+
     async def letmein(self, query, user_id, user_name, is_admin=False, nickname=""):
         """Self-service approval from a Ray ID or IP that Cloudflare actually blocked recently.
 
@@ -202,6 +223,10 @@ class Gatekeeper:
 
     async def poll_events(self):
         """Fetch new blocked events into SQLite. Returns the newly stored events."""
+        async with self._poll_lock:  # several members can be waiting on /letmein at once
+            return await self._poll_events()
+
+    async def _poll_events(self):
         now = utcnow()
         cursor = self.db.get_state("events_cursor")
         since = parse(cursor) - EVENT_OVERLAP if cursor else now - datetime.timedelta(hours=24)

@@ -263,3 +263,42 @@ def test_letmein_is_unlimited_by_default_and_labels_nickname():
         assert run(gk.letmein(f"203.0.113.{i}", 7, "carol_99", nickname="Carol (Smith family)"))[0] == "approved"
     row = gk.db.entry("203.0.113.1")
     assert row["approved_by"] == "carol_99" and row["label"] == "via /letmein (Carol (Smith family))"
+
+
+# --- /letmein keeps checking -----------------------------------------------------------------
+def _waiter(gk, cf, appear_after=None, ip="203.0.113.77", ray="bbbbbbbbbbbbbbbb"):
+    """Fake sleep that makes the block 'arrive' in Cloudflare after N waits; records waits and notices."""
+    calls = {"sleeps": [], "waiting_shown": 0}
+
+    async def sleep(seconds):
+        calls["sleeps"].append(seconds)
+        if appear_after is not None and len(calls["sleeps"]) == appear_after:
+            cf.events.append(event(ip, ago(minutes=1), ray=ray))
+
+    async def on_wait():
+        calls["waiting_shown"] += 1
+    return calls, sleep, on_wait
+
+
+def test_letmein_wait_approves_as_soon_as_cloudflare_reports_the_block():
+    gk, cf, _ = make()
+    calls, sleep, on_wait = _waiter(gk, cf, appear_after=2)
+    status, entry = run(gk.letmein_wait("bbbbbbbbbbbbbbbb", 1, "erin", on_wait=on_wait, sleep=sleep))
+    assert (status, entry) == ("approved", "203.0.113.77")
+    assert calls["sleeps"] == [30, 30] and calls["waiting_shown"] == 1
+
+
+def test_letmein_wait_gives_up_after_five_minutes():
+    gk, cf, _ = make()
+    calls, sleep, on_wait = _waiter(gk, cf, appear_after=None)
+    assert run(gk.letmein_wait("cccccccccccccccc", 1, "erin", on_wait=on_wait, sleep=sleep))[0] == "timeout"
+    assert sum(calls["sleeps"]) == 300 and len(calls["sleeps"]) == 10 and calls["waiting_shown"] == 1
+
+
+def test_letmein_wait_does_not_wait_when_found_or_invalid():
+    gk, cf, _ = make()
+    cf.events = [event("203.0.113.88", ago(minutes=5), ray="dddddddddddddddd")]
+    calls, sleep, on_wait = _waiter(gk, cf)
+    assert run(gk.letmein_wait("dddddddddddddddd", 1, "erin", on_wait=on_wait, sleep=sleep))[0] == "approved"
+    assert run(gk.letmein_wait("hello there", 1, "erin", on_wait=on_wait, sleep=sleep))[0] == "invalid"
+    assert calls["sleeps"] == [] and calls["waiting_shown"] == 0

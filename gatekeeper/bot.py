@@ -51,34 +51,72 @@ class ApproveButton(discord.ui.DynamicItem[discord.ui.Button], template=r"gk:ok:
 
 
 LETMEIN_REPLIES = {
-    "approved": "You're in: `{entry}` is now allowed. Give it about a minute, then reload the page or app.",
-    "already": "`{entry}` is already allowed. If you're still blocked, your connection may have changed. "
-               "Load the site again and use the new Ray ID from the block page.",
-    "not_found": "I couldn't find that block yet. Cloudflare usually reports a block 2-3 minutes after it happens. "
-                 "Load the site once, wait **3 minutes**, then try `/letmein` again with the Ray ID from the block page.",
+    "approved": "✅ **You're in!** `{entry}` is now allowed. Give it about a minute, then reload the page or app.",
+    "already": "✅ `{entry}` is already allowed. If you're still blocked, your connection may have changed: "
+               "load the site again, copy the new Ray ID from the block page, and tap **Get access** again.",
+    "timeout": "❌ I still couldn't find that block after 5 minutes. Make sure you copied the **Ray ID** from the "
+               "block page (and didn't refresh it), then tap **Get access** again. "
+               "If it still doesn't work, contact the server admin.",
     "limit": "You've reached the limit of {limit} active approvals. Ask an admin to approve this one.",
     "invalid": "That doesn't look like a Ray ID or an IP address. The Ray ID is the 16-character code at the "
-               "bottom of Cloudflare's block page, like `8f2a1b3c4d5e6f70`.",
+               "bottom of Cloudflare's block page, like `8f2a1b3c4d5e6f70`. Tap **Get access** to try again.",
 }
+LETMEIN_WAITING = ("⏳ **Looking for your block...** Cloudflare usually reports it within 2-3 minutes. "
+                   "I'll keep checking for up to 5 minutes and this message will update when you're in.\n"
+                   "Please **don't refresh** the block page: each refresh creates a new Ray ID.")
+
+ACCESS_POST = ("**Can't open one of our sites?**\n"
+               "If you see Cloudflare's **\"Sorry, you have been blocked\"** page:\n"
+               "1. Copy the **Ray ID** at the bottom of that page. Don't refresh it.\n"
+               "2. Tap **Get access** below and paste it in.\n"
+               "3. Wait here. I'll tell you when you're in (usually 2-3 minutes).")
 
 
 class LetMeInModal(discord.ui.Modal, title="Get access"):
-    code = discord.ui.TextInput(label="Ray ID or IP address", max_length=100,
-                                placeholder="Ray ID from the block page, e.g. 8f2a1b3c4d5e6f70")
+    code = discord.ui.TextInput(label="Ray ID (or IP address)", max_length=100,
+                                placeholder="From the bottom of the block page, e.g. 8f2a1b3c4d5e6f70")
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
         gk = interaction.client.gk
+
+        async def show_waiting():
+            await interaction.edit_original_response(content=LETMEIN_WAITING)
+
         try:
-            status, entry = await gk.letmein(self.code.value, interaction.user.id, interaction.user.name,
-                                             is_admin=_is_admin(interaction),
-                                             nickname=getattr(interaction.user, "display_name", ""))
+            status, entry = await gk.letmein_wait(self.code.value, interaction.user.id, interaction.user.name,
+                                                  is_admin=_is_admin(interaction),
+                                                  nickname=getattr(interaction.user, "display_name", ""),
+                                                  on_wait=show_waiting)
         except Exception as e:
             log.exception("letmein failed")
-            return await interaction.followup.send(f"Something went wrong: {e}. Ask an admin.", ephemeral=True)
+            return await interaction.edit_original_response(content=f"Something went wrong: {e}. "
+                                                                    "Contact the server admin.")
         log.info("/letmein by %s: %s %s", interaction.user.name, status, entry)
-        await interaction.followup.send(
-            LETMEIN_REPLIES[status].format(entry=entry, limit=gk.s.letmein_max_active), ephemeral=True)
+        await interaction.edit_original_response(
+            content=LETMEIN_REPLIES[status].format(entry=entry, limit=gk.s.letmein_max_active))
+
+
+async def _open_letmein(interaction: discord.Interaction):
+    if not _may_letmein(interaction):
+        return await interaction.response.send_message("You need to be verified before you can use this.",
+                                                       ephemeral=True)
+    await interaction.response.send_modal(LetMeInModal())
+
+
+class AccessButton(discord.ui.DynamicItem[discord.ui.Button], template=r"gk:access"):
+    """The permanent 'Get access' button posted by /postaccess. Works after restarts."""
+
+    def __init__(self):
+        super().__init__(discord.ui.Button(label="Get access", style=discord.ButtonStyle.primary,
+                                           emoji="🔓", custom_id="gk:access"))
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match):
+        return cls()
+
+    async def callback(self, interaction: discord.Interaction):
+        await _open_letmein(interaction)
 
 
 def _may_letmein(interaction: discord.Interaction) -> bool:
@@ -112,7 +150,7 @@ class GateBot(discord.Client):
         self.tree = app_commands.CommandTree(self)
 
     async def setup_hook(self):
-        self.add_dynamic_items(ApproveButton)
+        self.add_dynamic_items(ApproveButton, AccessButton)
         guild = discord.Object(id=self.settings.discord_guild)
         for cmd, _ in COMMANDS:
             self.tree.add_command(cmd, guild=guild)
@@ -125,10 +163,22 @@ class GateBot(discord.Client):
 
 @app_commands.command(name="letmein", description="Blocked from a site? Get access with the Ray ID from the block page")
 async def letmein_cmd(interaction: discord.Interaction):
-    if not _may_letmein(interaction):
-        return await interaction.response.send_message("You need to be verified before you can use this.",
-                                                       ephemeral=True)
-    await interaction.response.send_modal(LetMeInModal())
+    await _open_letmein(interaction)
+
+
+@app_commands.command(name="postaccess", description="Post a permanent 'Get access' button in this channel")
+@app_commands.default_permissions(administrator=True)
+async def postaccess_cmd(interaction: discord.Interaction):
+    if not _is_admin(interaction):
+        return await _deny(interaction)
+    view = discord.ui.View(timeout=None)
+    view.add_item(AccessButton())
+    try:
+        await interaction.channel.send(ACCESS_POST, view=view)
+    except discord.Forbidden:
+        return await interaction.response.send_message(
+            "I can't post in this channel. Give the bot 'Send Messages' here, then try again.", ephemeral=True)
+    await interaction.response.send_message("Posted. You may want to pin it.", ephemeral=True)
 
 
 @app_commands.command(name="blocked", description="Recently blocked IPs, with Approve buttons")
@@ -199,6 +249,7 @@ async def revoke_cmd(interaction: discord.Interaction, entry: str):
 # Every command the bot registers, with who can use it. The dashboard's Commands page reads this too.
 COMMANDS = (
     (letmein_cmd, "Everyone in the server"),
+    (postaccess_cmd, "Admins"),
     (blocked_cmd, "Admins"),
     (approve_cmd, "Admins"),
     (revoke_cmd, "Admins"),

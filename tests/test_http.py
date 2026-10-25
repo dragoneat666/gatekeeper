@@ -183,6 +183,7 @@ def test_dashboard_remove_needs_token_and_skips_pinned():
 
 
 def test_commands_page_lists_every_registered_command():
+    import html
     from gatekeeper.bot import COMMANDS
     from gatekeeper.web import build_app
     gk, _, _ = make()
@@ -192,6 +193,15 @@ def test_commands_page_lists_every_registered_command():
         async with TestClient(TestServer(build_app(gk, gk.s))) as client:
             page = await (await client.get("/commands", auth=aiohttp.BasicAuth("admin", "secret"))).text()
             for cmd, who in COMMANDS:
-                assert f"/{cmd.name}" in page and cmd.description[:30] in page
+                assert f"/{cmd.name}" in page and html.escape(cmd.description[:30]) in page
             assert "/blocked [minutes]" in page and "/approve &lt;ip&gt; [label]" in page
     asyncio.run(go())
+
+
+def test_access_button_and_replies_cover_every_outcome():
+    from gatekeeper.bot import COMMANDS, LETMEIN_REPLIES, AccessButton
+    btn = AccessButton()
+    assert btn.item.custom_id == "gk:access" and btn.item.label == "Get access"
+    assert AccessButton.__discord_ui_compiled_template__.fullmatch("gk:access")
+    assert {"approved", "already", "timeout", "limit", "invalid"} <= set(LETMEIN_REPLIES)
+    assert "postaccess" in [c.name for c, _ in COMMANDS]

@@ -8,7 +8,8 @@ Companion app for a default-deny Cloudflare IP allowlist (WAF custom rule `not i
   - `/blocked [minutes]` lists recent blocked IPs with Approve buttons. It refreshes from Cloudflare first.
   - `/approve <ip> [label]` approves an IP someone sent you from Cloudflare's block page.
   - `/revoke <entry>` removes an entry.
-- **`/letmein` for members (self-service)**: opens a box for the Ray ID from Cloudflare's block page, or an IP address. The entry is approved only if Cloudflare actually blocked that request or IP recently (default 24 h). Optionally, each member can be limited to a number of active approvals (default: unlimited). An optional role can be required.
+- **`/postaccess`** (admin) posts a permanent **Get access** button in a channel, so members never have to type a command.
+- **`/letmein` / Get access (self-service)**: opens a box for the Ray ID from Cloudflare's block page, or an IP address. The entry is approved only if Cloudflare actually blocked that request or IP recently (default 24 h). If Cloudflare hasn't reported the block yet, the bot keeps checking every 30 seconds for up to 5 minutes and updates its reply when the member is in. Optionally, each member can be limited to a number of active approvals (default: unlimited). An optional role can be required.
 - **Daily summary** to a private admin channel via webhook.
 - **Expiry**: entries unused for 60 days (configurable) are removed. "Used" comes from Cloudflare's per-IP request analytics, so TV and phone apps count.
 - **Home IP**: the server's public IP is kept on the list and replaced automatically when it changes (new one added before the old one is removed).
